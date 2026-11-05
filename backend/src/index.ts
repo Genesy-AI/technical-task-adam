@@ -1,9 +1,11 @@
 import { PrismaClient } from '@prisma/client'
 import express, { Request, Response } from 'express'
 import { Connection, Client } from '@temporalio/client'
+import dotenv from 'dotenv'
 import { verifyEmailWorkflow } from './workflows'
 import { generateMessageFromTemplate } from './utils/messageGenerator'
 import { runTemporalWorker } from './worker'
+dotenv.config()
 const prisma = new PrismaClient()
 const app = express()
 app.use(express.json())
@@ -167,6 +169,75 @@ app.post('/leads/generate-messages', async (req: Request, res: Response) => {
   }
 })
 
+app.post('/leads/guess-genders', async (req: Request, res: Response) => {
+  if (!req.body || typeof req.body !== 'object') {
+    return res.status(400).json({ error: 'Request body is required and must be valid JSON' })
+  }
+
+  const { leadIds } = req.body
+
+  if (!Array.isArray(leadIds) || leadIds.length === 0) {
+    return res.status(400).json({ error: 'leadIds must be a non-empty array' })
+  }
+
+  try {
+    const leads = await prisma.lead.findMany({
+      where: {
+        id: {
+          in: leadIds.map((id) => Number(id)),
+        },
+      },
+    })
+
+    if (leads.length === 0) {
+      return res.status(404).json({ error: 'No leads found with the provided IDs' })
+    }
+
+    let updatedCount = 0
+    const errors: Array<{ leadId: number; leadName: string; error: string }> = []
+
+    for (const lead of leads) {
+      try {
+        const apiBaseUrl = process.env.GENDERIZE_API_BASE_URL || 'https://api.genderize.io'
+        const response = await fetch(`${apiBaseUrl}/?name=${encodeURIComponent(lead.firstName)}`)
+
+        if (!response.ok) {
+          throw new Error(`API request failed: ${response.status}`)
+        }
+
+        const data = await response.json()
+
+        let guessedGender = 'unknown'
+        if (data && data.gender) {
+          guessedGender = data.gender === 'male' ? 'male' : data.gender === 'female' ? 'female' : 'unknown'
+        }
+
+        await prisma.lead.update({
+          where: { id: lead.id },
+          data: { gender: guessedGender },
+        })
+
+        updatedCount++
+      } catch (error) {
+        errors.push({
+          leadId: lead.id,
+          leadName: `${lead.firstName} ${lead.lastName}`.trim(),
+          error: error instanceof Error ? error.message : 'Unknown error',
+        })
+      }
+    }
+
+    res.json({
+      success: true,
+      updatedCount,
+      errors,
+    })
+  } catch (error) {
+    console.error('Error guessing genders:', error)
+    res.status(500).json({ error: 'Failed to guess genders' })
+  }
+})
+
 app.post('/leads/bulk', async (req: Request, res: Response) => {
   if (!req.body || typeof req.body !== 'object') {
     return res.status(400).json({ error: 'Request body is required and must be valid JSON' })
@@ -229,6 +300,7 @@ app.post('/leads/bulk', async (req: Request, res: Response) => {
             jobTitle: lead.jobTitle ? lead.jobTitle.trim() : null,
             countryCode: lead.countryCode ? lead.countryCode.trim() : null,
             companyName: lead.companyName ? lead.companyName.trim() : null,
+            gender: lead.gender ? lead.gender.trim() : null,
           },
         })
         importedCount++

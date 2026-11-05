@@ -19,4 +19,5 @@ model lead {
   companyName String?
   message     String?
   emailVerified Boolean?
+  gender      String?
 }

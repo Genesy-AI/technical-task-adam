@@ -7,6 +7,7 @@ export interface CsvLead {
   jobTitle?: string
   countryCode?: string
   companyName?: string
+  gender?: string
   isValid: boolean
   errors: string[]
   rowIndex: number
@@ -15,6 +16,19 @@ export interface CsvLead {
 export const isValidEmail = (email: string): boolean => {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
   return emailRegex.test(email)
+}
+
+export const isValidGender = (gender: string): boolean => {
+  const validGenders = ['male', 'female', 'unknown', 'm', 'f', 'u']
+  return validGenders.includes(gender.toLowerCase())
+}
+
+export const normalizeGender = (gender: string): string => {
+  const normalized = gender.toLowerCase()
+  if (normalized === 'm') return 'male'
+  if (normalized === 'f') return 'female'
+  if (normalized === 'u') return 'unknown'
+  return normalized
 }
 
 export const parseCsv = (content: string): CsvLead[] => {
@@ -73,6 +87,9 @@ export const parseCsv = (content: string): CsvLead[] => {
         case 'companyname':
           lead.companyName = trimmedValue || undefined
           break
+        case 'gender':
+          lead.gender = trimmedValue || undefined
+          break
       }
     })
 
@@ -88,12 +105,16 @@ export const parseCsv = (content: string): CsvLead[] => {
     } else if (!isValidEmail(lead.email)) {
       errors.push('Invalid email format')
     }
+    if (lead.gender && !isValidGender(lead.gender)) {
+      errors.push('Invalid gender format. Valid values: male, female, unknown, m, f, u')
+    }
 
     data.push({
       ...lead,
       firstName: lead.firstName || '',
       lastName: lead.lastName || '',
       email: lead.email || '',
+      gender: lead.gender && isValidGender(lead.gender) ? normalizeGender(lead.gender) : lead.gender,
       isValid: errors.length === 0,
       errors,
     } as CsvLead)

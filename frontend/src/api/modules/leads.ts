@@ -2,6 +2,7 @@ import { LeadsCreateInput, LeadsCreateOutput } from '../types/leads/create'
 import { LeadsDeleteInput, LeadsDeleteOutput } from '../types/leads/delete'
 import { LeadsDeleteManyInput, LeadsDeleteManyOutput } from '../types/leads/deleteMany'
 import { LeadsGenerateMessagesInput, LeadsGenerateMessagesOutput } from '../types/leads/generateMessages'
+import { LeadsGuessGendersInput, LeadsGuessGendersOutput } from '../types/leads/guessGenders'
 import { LeadsGetManyInput, LeadsGetManyOutput } from '../types/leads/getMany'
 import { LeadsGetOneInput, LeadsGetOneOutput } from '../types/leads/getOne'
 import { LeadsUpdateInput, LeadsUpdateOutput } from '../types/leads/update'
@@ -20,6 +21,7 @@ export const leadsApi = {
     'post',
     '/leads/generate-messages'
   ),
+  guessGenders: endpoint<LeadsGuessGendersOutput, LeadsGuessGendersInput>('post', '/leads/guess-genders'),
   bulkImport: endpoint<LeadsBulkImportOutput, LeadsBulkImportInput>('post', '/leads/bulk'),
   verifyEmails: endpoint<LeadsVerifyEmailsOutput, LeadsVerifyEmailsInput>('post', '/leads/verify-emails'),
 } as const satisfies ApiModule

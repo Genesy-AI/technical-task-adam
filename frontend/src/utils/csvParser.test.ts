@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { parseCsv, isValidEmail } from './csvParser'
+import { parseCsv, isValidEmail, isValidGender, normalizeGender } from './csvParser'
 
 describe('isValidEmail', () => {
   it('should return true for valid email addresses', () => {
@@ -17,6 +17,45 @@ describe('isValidEmail', () => {
     expect(isValidEmail('test.example.com')).toBe(false)
     expect(isValidEmail('test@.com')).toBe(false)
     expect(isValidEmail('test@example')).toBe(false)
+  })
+})
+
+describe('isValidGender', () => {
+  it('should return true for valid gender values', () => {
+    expect(isValidGender('male')).toBe(true)
+    expect(isValidGender('female')).toBe(true)
+    expect(isValidGender('unknown')).toBe(true)
+    expect(isValidGender('m')).toBe(true)
+    expect(isValidGender('f')).toBe(true)
+    expect(isValidGender('u')).toBe(true)
+    expect(isValidGender('MALE')).toBe(true)
+    expect(isValidGender('Female')).toBe(true)
+  })
+
+  it('should return false for invalid gender values', () => {
+    expect(isValidGender('invalid')).toBe(false)
+    expect(isValidGender('man')).toBe(false)
+    expect(isValidGender('woman')).toBe(false)
+    expect(isValidGender('')).toBe(false)
+    expect(isValidGender('x')).toBe(false)
+  })
+})
+
+describe('normalizeGender', () => {
+  it('should normalize gender abbreviations', () => {
+    expect(normalizeGender('m')).toBe('male')
+    expect(normalizeGender('M')).toBe('male')
+    expect(normalizeGender('f')).toBe('female')
+    expect(normalizeGender('F')).toBe('female')
+    expect(normalizeGender('u')).toBe('unknown')
+    expect(normalizeGender('U')).toBe('unknown')
+  })
+
+  it('should keep full gender values unchanged', () => {
+    expect(normalizeGender('male')).toBe('male')
+    expect(normalizeGender('female')).toBe('female')
+    expect(normalizeGender('unknown')).toBe('unknown')
+    expect(normalizeGender('MALE')).toBe('male')
   })
 })
 
@@ -222,5 +261,37 @@ Jane,Johnson,jane@example.com`
     expect(result[0].lastName).toBe('Doe')
     expect(result[0].email).toBe('john@example.com')
     expect(result[0].isValid).toBe(true)
+  })
+
+  it('should handle gender field in CSV', () => {
+    const csv = `firstName,lastName,email,gender
+John,Doe,john@example.com,male
+Jane,Smith,jane@example.com,f
+Bob,Jones,bob@example.com,invalid
+Alice,Brown,alice@example.com,`
+
+    const result = parseCsv(csv)
+
+    expect(result).toHaveLength(4)
+
+    expect(result[0].firstName).toBe('John')
+    expect(result[0].gender).toBe('male')
+    expect(result[0].isValid).toBe(true)
+    expect(result[0].errors).toHaveLength(0)
+
+    expect(result[1].firstName).toBe('Jane')
+    expect(result[1].gender).toBe('female')
+    expect(result[1].isValid).toBe(true)
+    expect(result[1].errors).toHaveLength(0)
+
+    expect(result[2].firstName).toBe('Bob')
+    expect(result[2].gender).toBe('invalid')
+    expect(result[2].isValid).toBe(false)
+    expect(result[2].errors).toContain('Invalid gender format. Valid values: male, female, unknown, m, f, u')
+
+    expect(result[3].firstName).toBe('Alice')
+    expect(result[3].gender).toBeUndefined()
+    expect(result[3].isValid).toBe(true)
+    expect(result[3].errors).toHaveLength(0)
   })
 })
