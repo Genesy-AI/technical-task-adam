@@ -6,6 +6,7 @@
 | **Author** | Adam Olšer |
 | **Date** | 2026-11-06 |
 | **Related** | #4 (CSV country codes), #5 (email verification), #6 (enrich phone, draft), #1 (gender guessing review) |
+| **Recording** | [Screen recording of the session (cap.so)](https://cap.so/s/pa75hxn05h4p45x) |
 
 ## Context
 
@@ -13,7 +14,7 @@ This list comes from working through the take-home tasks: two bug fixes, the enr
 
 **Effort** is a rough estimate: **S** is up to a day, **M** is 2–5 days, **L** is more than a week.
 
-**🎙️** marks a point I raised during the screen-recorded session. Unmarked points came from the code analysis.
+**🎙️** marks a point I raised during the [screen-recorded session](https://cap.so/s/pa75hxn05h4p45x). Unmarked points came from the code analysis.
 
 ## Summary
 
