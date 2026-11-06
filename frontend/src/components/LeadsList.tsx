@@ -40,11 +40,16 @@ export const LeadsList: FC = () => {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['leads', 'getMany'] })
       setIsEnrichDropdownOpen(false)
-      toast.success(
-        data.verifiedCount === 1
-          ? `Verified ${data.verifiedCount} email`
-          : `Verified ${data.verifiedCount} emails`
-      )
+      if (data.verifiedCount > 0) {
+        toast.success(
+          data.verifiedCount === 1
+            ? `Verified ${data.verifiedCount} email`
+            : `Verified ${data.verifiedCount} emails`
+        )
+      }
+      if (data.errors.length > 0) {
+        toast.error(`Could not verify: ${data.errors.map((e) => e.leadName).join(', ')}`)
+      }
     },
     onError: () => {
       toast.error('Failed to verify emails. Please try again.')
