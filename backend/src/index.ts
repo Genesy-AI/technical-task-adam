@@ -5,7 +5,14 @@ import { verifyEmailWorkflow } from './workflows'
 import { generateMessageFromTemplate } from './utils/messageGenerator'
 import { runTemporalWorker } from './worker'
 const prisma = new PrismaClient()
-const app = express()
+
+// One Temporal connection for the process instead of one per request.
+let temporalClient: Promise<Client> | undefined
+const getTemporalClient = () =>
+  (temporalClient ??= Connection.connect({ address: 'localhost:7233' }).then(
+    (connection) => new Client({ connection, namespace: 'default' })
+  ))
+export const app = express()
 app.use(express.json())
 
 app.use(function (req, res, next) {
@@ -273,51 +280,52 @@ app.post('/leads/verify-emails', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'No leads found with the provided IDs' })
     }
 
-    const connection = await Connection.connect({ address: 'localhost:7233' })
-    const client = new Client({ connection, namespace: 'default' })
+    const client = await getTemporalClient()
 
-    let verifiedCount = 0
-    const results: Array<{ leadId: number; emailVerified: boolean }> = []
-    const errors: Array<{ leadId: number; leadName: string; error: string }> = []
-
-    for (const lead of leads) {
-      try {
-        const isVerified = await client.workflow.execute(verifyEmailWorkflow, {
+    // In parallel: the request takes as long as the slowest lead, not the sum of all of them.
+    const outcomes = await Promise.allSettled(
+      leads.map(async (lead) => {
+        const emailVerified = await client.workflow.execute(verifyEmailWorkflow, {
           taskQueue: 'myQueue',
-          workflowId: `verify-email-${lead.id}-${Date.now()}`,
+          workflowId: `verify-email-${lead.id}`, // one run per lead at a time
+          workflowIdConflictPolicy: 'USE_EXISTING', // a double click joins the running workflow
           args: [lead.email],
         })
+        await prisma.lead.update({ where: { id: lead.id }, data: { emailVerified } })
+        return { leadId: lead.id, emailVerified }
+      })
+    )
 
-        await prisma.lead.update({
-          where: { id: lead.id },
-          data: { emailVerified: Boolean(isVerified) },
-        })
-
-        results.push({ leadId: lead.id, emailVerified: isVerified })
-        verifiedCount += 1
-      } catch (error) {
+    const results: Array<{ leadId: number; emailVerified: boolean }> = []
+    const errors: Array<{ leadId: number; leadName: string; error: string }> = []
+    // A failed check leaves emailVerified untouched (null = unknown), never false (= invalid).
+    outcomes.forEach((outcome, i) => {
+      if (outcome.status === 'fulfilled') {
+        results.push(outcome.value)
+      } else {
         errors.push({
-          leadId: lead.id,
-          leadName: `${lead.firstName} ${lead.lastName}`.trim(),
-          error: error instanceof Error ? error.message : 'Unknown error',
+          leadId: leads[i].id,
+          leadName: `${leads[i].firstName} ${leads[i].lastName}`.trim(),
+          error: outcome.reason instanceof Error ? outcome.reason.message : 'Unknown error',
         })
       }
-    }
+    })
 
-    await connection.close()
-
-    res.json({ success: true, verifiedCount, results, errors })
+    res.json({ success: true, verifiedCount: results.length, results, errors })
   } catch (error) {
     console.error('Error verifying emails:', error)
     res.status(500).json({ error: 'Failed to verify emails' })
   }
 })
 
-app.listen(4000, () => {
-  console.log('Express server is running on port 4000')
-})
+// Only start the server and worker when run directly (nodemon / node), not when imported by tests.
+if (require.main === module) {
+  app.listen(4000, () => {
+    console.log('Express server is running on port 4000')
+  })
 
-runTemporalWorker().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+  runTemporalWorker().catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
+}
