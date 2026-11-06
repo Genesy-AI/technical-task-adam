@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import type { AddressInfo } from 'net'
 import type { Server } from 'http'
 
-const { prismaLead, connect, execute } = vi.hoisted(() => ({
-  prismaLead: { findMany: vi.fn(), update: vi.fn() },
+const { prismaLead, connect, execute, start } = vi.hoisted(() => ({
+  prismaLead: { findMany: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
   connect: vi.fn(async () => ({})),
   execute: vi.fn(),
+  start: vi.fn(),
 }))
 
 vi.mock('@prisma/client', () => ({
@@ -16,7 +17,7 @@ vi.mock('@prisma/client', () => ({
 vi.mock('@temporalio/client', () => ({
   Connection: { connect },
   Client: class {
-    workflow = { execute }
+    workflow = { execute, start }
   },
 }))
 vi.mock('./worker', () => ({ runTemporalWorker: vi.fn() }))
@@ -34,14 +35,19 @@ beforeAll(() => {
 })
 afterAll(() => server.close())
 // `connect` is deliberately not reset: it counts connections across the whole file
-beforeEach(() => [prismaLead.findMany, prismaLead.update, execute].forEach((mock) => mock.mockReset()))
+beforeEach(() =>
+  [prismaLead.findMany, prismaLead.update, prismaLead.updateMany, execute, start].forEach((mock) =>
+    mock.mockReset()
+  )
+)
 
-const verify = (body: unknown) =>
-  fetch(`${baseUrl}/leads/verify-emails`, {
+const post = (path: string, body: unknown) =>
+  fetch(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+const verify = (body: unknown) => post('/leads/verify-emails', body)
 
 describe('POST /leads/verify-emails', () => {
   it('rejects a missing or empty leadIds array', async () => {
@@ -106,5 +112,60 @@ describe('POST /leads/verify-emails', () => {
     await verify({ leadIds: [1] })
 
     expect(connect).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('POST /leads/enrich-phones', () => {
+  it('only starts leads that were never enriched or failed, marking them PENDING first', async () => {
+    prismaLead.findMany.mockResolvedValue([john])
+    start.mockResolvedValue({})
+
+    const res = await post('/leads/enrich-phones', { leadIds: [1, 2] })
+
+    expect(res.status).toBe(202)
+    expect(await res.json()).toEqual({ started: 1, skipped: 1, failedToStart: 0 })
+    expect(prismaLead.findMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: [1, 2] },
+        phoneNumber: null,
+        OR: [{ phoneEnrichmentStatus: null }, { phoneEnrichmentStatus: 'FAILED' }],
+      },
+    })
+    expect(prismaLead.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [1] } },
+      data: { phoneEnrichmentStatus: 'PENDING' },
+    })
+    expect(prismaLead.updateMany.mock.invocationCallOrder[0]).toBeLessThan(start.mock.invocationCallOrder[0])
+  })
+
+  it('starts one idempotent workflow per lead without waiting for it', async () => {
+    prismaLead.findMany.mockResolvedValue([john])
+    start.mockResolvedValue({})
+
+    await post('/leads/enrich-phones', { leadIds: [1] })
+
+    expect(execute).not.toHaveBeenCalled()
+    expect(start).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        workflowId: 'enrich-phone-1',
+        workflowIdConflictPolicy: 'USE_EXISTING',
+        workflowIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY',
+        args: [1, expect.objectContaining({ email: john.email, companyWebsite: 'example.com' })],
+      })
+    )
+  })
+
+  it('marks a lead FAILED when Temporal refuses to start its workflow', async () => {
+    prismaLead.findMany.mockResolvedValue([john])
+    start.mockRejectedValue(new Error('Workflow execution already started'))
+
+    const res = await post('/leads/enrich-phones', { leadIds: [1] })
+
+    expect(await res.json()).toEqual({ started: 0, skipped: 0, failedToStart: 1 })
+    expect(prismaLead.updateMany).toHaveBeenLastCalledWith({
+      where: { id: { in: [1] }, phoneEnrichmentStatus: 'PENDING' },
+      data: { phoneEnrichmentStatus: 'FAILED' },
+    })
   })
 })

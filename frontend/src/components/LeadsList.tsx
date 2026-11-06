@@ -1,9 +1,22 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FC, useState } from 'react'
+import { FC, ReactNode, useState } from 'react'
 import toast from 'react-hot-toast'
 import { api } from '../api'
 import { MessageTemplateModal } from './MessageTemplateModal'
 import { CsvImportModal } from './CsvImportModal'
+import type { PhoneEnrichmentStatus } from '../api/types/leads/getMany'
+
+// Exhaustive: adding a status without a label fails to compile. FOUND renders the number itself.
+const PHONE_STATUS: Record<PhoneEnrichmentStatus, ReactNode> = {
+  PENDING: <span className="text-gray-500 animate-pulse">Searching…</span>,
+  FOUND: null,
+  NOT_FOUND: <span className="text-gray-400">No data found</span>,
+  FAILED: (
+    <span className="text-red-600" title="A provider failed. Run Enrich Phone again to retry.">
+      Lookup failed
+    </span>
+  ),
+}
 
 export const LeadsList: FC = () => {
   const [selectedLeads, setSelectedLeads] = useState<number[]>([])
@@ -16,6 +29,9 @@ export const LeadsList: FC = () => {
     queryKey: ['leads', 'getMany'],
     queryFn: async () => api.leads.getMany(),
     retry: false,
+    // Poll only while a phone lookup is running; stops by itself when none is PENDING
+    refetchInterval: (query) =>
+      query.state.data?.some((lead) => lead.phoneEnrichmentStatus === 'PENDING') ? 2000 : false,
   })
   
 
@@ -54,6 +70,26 @@ export const LeadsList: FC = () => {
     onError: () => {
       toast.error('Failed to verify emails. Please try again.')
     }
+  })
+
+  const enrichPhonesMutation = useMutation({
+    mutationFn: async (ids: number[]) => api.leads.enrichPhones({ leadIds: ids }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['leads', 'getMany'] })
+      setIsEnrichDropdownOpen(false)
+      if (data.started > 0) {
+        toast.success(`Searching phone numbers for ${data.started} lead${data.started === 1 ? '' : 's'}`)
+      }
+      if (data.skipped > 0) {
+        toast(`${data.skipped} lead${data.skipped === 1 ? ' was' : 's were'} skipped: already enriched or in progress`)
+      }
+      if (data.failedToStart > 0) {
+        toast.error(`Could not start ${data.failedToStart} lookup${data.failedToStart === 1 ? '' : 's'}. Try again.`)
+      }
+    },
+    onError: () => {
+      toast.error('Failed to enrich phone numbers. Please try again.')
+    },
   })
 
   const handleSelectAll = (checked: boolean) => {
@@ -164,6 +200,18 @@ export const LeadsList: FC = () => {
                       </div>
                     </button>
                     <button
+                      onClick={() => enrichPhonesMutation.mutate(selectedLeads)}
+                      disabled={enrichPhonesMutation.isPending}
+                      className="block w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors disabled:opacity-50"
+                    >
+                      <div className="flex items-center">
+                        <svg className="mr-3 h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                        </svg>
+                        Enrich Phone
+                      </div>
+                    </button>
+                    <button
                       onClick={() => {
                         toast.error('Gender guessing feature is not yet implemented')
                         setIsEnrichDropdownOpen(false)
@@ -240,6 +288,9 @@ export const LeadsList: FC = () => {
                   Country
                 </th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
+                  Phone
+                </th>
+                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
                   Message
                 </th>
                 <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">
@@ -279,6 +330,11 @@ export const LeadsList: FC = () => {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm text-gray-900">{lead.countryCode || '-'}</div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm text-gray-900">
+                      {lead.phoneNumber ?? (lead.phoneEnrichmentStatus ? PHONE_STATUS[lead.phoneEnrichmentStatus] : '-')}
+                    </div>
                   </td>
                   <td className="px-6 py-4">
                     <div className="text-sm text-gray-900 max-w-xs truncate" title={lead.message || ''}>

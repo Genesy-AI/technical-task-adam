@@ -1,5 +1,7 @@
 export type LeadsGetManyInput = undefined
 
+export type PhoneEnrichmentStatus = 'PENDING' | 'FOUND' | 'NOT_FOUND' | 'FAILED'
+
 export type LeadsGetManyOutput = {
   id: number
   createdAt: string
@@ -12,4 +14,6 @@ export type LeadsGetManyOutput = {
   companyName: string | null
   message: string | null
   emailVerified: boolean | null
+  phoneNumber: string | null
+  phoneEnrichmentStatus: PhoneEnrichmentStatus | null
 }[]
