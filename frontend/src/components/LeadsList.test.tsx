@@ -6,14 +6,19 @@ import toast from 'react-hot-toast'
 import { api } from '../api'
 import { LeadsList } from './LeadsList'
 import type { LeadsVerifyEmailsOutput } from '../api/types/leads/verifyEmails'
+import type { LeadsGetManyOutput } from '../api/types/leads/getMany'
 
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }))
-vi.mock('../api', () => ({ api: { leads: { getMany: vi.fn(), verifyEmails: vi.fn() } } }))
+type Lead = LeadsGetManyOutput[number]
+
+vi.mock('react-hot-toast', () => ({ default: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }) }))
+vi.mock('../api', () => ({
+  api: { leads: { getMany: vi.fn(), verifyEmails: vi.fn(), enrichPhones: vi.fn() } },
+}))
 
 // No @testing-library/react in the repo, so render with react-dom and React's act().
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const lead = (id: number, firstName: string, lastName: string) => ({
+const lead = (id: number, firstName: string, lastName: string, overrides: Partial<Lead> = {}): Lead => ({
   id,
   firstName,
   lastName,
@@ -25,6 +30,9 @@ const lead = (id: number, firstName: string, lastName: string) => ({
   companyName: null,
   message: null,
   emailVerified: null,
+  phoneNumber: null,
+  phoneEnrichmentStatus: null,
+  ...overrides,
 })
 
 let container: HTMLDivElement
@@ -49,8 +57,7 @@ const clickButton = async (text: string) => {
   await act(async () => button.click())
 }
 
-const verifyAllLeads = async (response: LeadsVerifyEmailsOutput) => {
-  vi.mocked(api.leads.verifyEmails).mockResolvedValue(response)
+const renderList = async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () =>
     root.render(
@@ -60,10 +67,19 @@ const verifyAllLeads = async (response: LeadsVerifyEmailsOutput) => {
     )
   )
   await act(() => new Promise((resolve) => setTimeout(resolve))) // let the leads query resolve
+}
+
+const selectAllAndEnrich = async (action: string) => {
+  await renderList()
   const selectAll = container.querySelector<HTMLInputElement>('thead input[type="checkbox"]')!
   await act(async () => selectAll.click())
   await clickButton('Enrich')
-  await clickButton('Verify Email')
+  await clickButton(action)
+}
+
+const verifyAllLeads = async (response: LeadsVerifyEmailsOutput) => {
+  vi.mocked(api.leads.verifyEmails).mockResolvedValue(response)
+  await selectAllAndEnrich('Verify Email')
   expect(api.leads.verifyEmails).toHaveBeenCalledWith({ leadIds: [1, 2] })
 }
 
@@ -106,6 +122,32 @@ describe('LeadsList email verification feedback', () => {
     })
 
     expect(toast.success).toHaveBeenCalledWith('Verified 2 emails')
+    expect(toast.error).not.toHaveBeenCalled()
+  })
+})
+
+describe('LeadsList phone enrichment', () => {
+  it('shows the phone or the lookup status for each lead', async () => {
+    vi.mocked(api.leads.getMany).mockResolvedValue([
+      lead(1, 'Found', 'Lead', { phoneNumber: '4876025880', phoneEnrichmentStatus: 'FOUND' }),
+      lead(2, 'Pending', 'Lead', { phoneEnrichmentStatus: 'PENDING' }),
+      lead(3, 'Missing', 'Lead', { phoneEnrichmentStatus: 'NOT_FOUND' }),
+      lead(4, 'Failed', 'Lead', { phoneEnrichmentStatus: 'FAILED' }),
+      lead(5, 'Never', 'Lead'),
+    ])
+    await renderList()
+
+    const phoneCells = [...container.querySelectorAll('tbody tr')].map((row) => row.children[6].textContent)
+    expect(phoneCells).toEqual(['4876025880', 'Searching…', 'No data found', 'Lookup failed', '-'])
+  })
+
+  it('reports started and skipped lookups', async () => {
+    vi.mocked(api.leads.enrichPhones).mockResolvedValue({ started: 1, skipped: 1, failedToStart: 0 })
+    await selectAllAndEnrich('Enrich Phone')
+
+    expect(api.leads.enrichPhones).toHaveBeenCalledWith({ leadIds: [1, 2] })
+    expect(toast.success).toHaveBeenCalledWith('Searching phone numbers for 1 lead')
+    expect(toast).toHaveBeenCalledWith('1 lead was skipped: already enriched or in progress')
     expect(toast.error).not.toHaveBeenCalled()
   })
 })

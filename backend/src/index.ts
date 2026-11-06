@@ -1,10 +1,16 @@
-import { PrismaClient } from '@prisma/client'
 import express, { Request, Response } from 'express'
 import { Connection, Client } from '@temporalio/client'
-import { verifyEmailWorkflow } from './workflows'
+import { enrichPhoneWorkflow, verifyEmailWorkflow } from './workflows'
+import { toPhoneLookupInput } from './workflows/activities/phoneProviders'
 import { generateMessageFromTemplate } from './utils/messageGenerator'
 import { runTemporalWorker } from './worker'
-const prisma = new PrismaClient()
+import { prisma } from './db'
+
+try {
+  process.loadEnvFile() // backend/.env (gitignored); see .env.sample
+} catch {
+  // no .env file: rely on the real environment
+}
 
 // One Temporal connection for the process instead of one per request.
 let temporalClient: Promise<Client> | undefined
@@ -318,11 +324,79 @@ app.post('/leads/verify-emails', async (req: Request, res: Response) => {
   }
 })
 
+app.post('/leads/enrich-phones', async (req: Request, res: Response) => {
+  if (!req.body || typeof req.body !== 'object') {
+    return res.status(400).json({ error: 'Request body is required and must be valid JSON' })
+  }
+
+  const { leadIds } = req.body as { leadIds?: number[] }
+
+  if (!Array.isArray(leadIds) || leadIds.length === 0) {
+    return res.status(400).json({ error: 'leadIds must be a non-empty array' })
+  }
+
+  try {
+    const ids = leadIds.map((id) => Number(id))
+    // Only these may start: never enriched (null → PENDING) or last run failed (FAILED → PENDING).
+    // FOUND and NOT_FOUND are final ("only one per lead"), PENDING is already running.
+    const leads = await prisma.lead.findMany({
+      where: {
+        id: { in: ids },
+        phoneNumber: null,
+        OR: [{ phoneEnrichmentStatus: null }, { phoneEnrichmentStatus: 'FAILED' }],
+      },
+    })
+
+    // PENDING before starting, so a fast workflow can't finish before the status exists
+    await prisma.lead.updateMany({
+      where: { id: { in: leads.map((lead) => lead.id) } },
+      data: { phoneEnrichmentStatus: 'PENDING' },
+    })
+
+    // start, not execute: answer right away and let the UI poll the status
+    const client = await getTemporalClient()
+    const outcomes = await Promise.allSettled(
+      leads.map((lead) =>
+        client.workflow.start(enrichPhoneWorkflow, {
+          taskQueue: 'myQueue',
+          workflowId: `enrich-phone-${lead.id}`, // one workflow per lead
+          workflowIdConflictPolicy: 'USE_EXISTING', // a repeat click joins the running one
+          workflowIdReusePolicy: 'ALLOW_DUPLICATE_FAILED_ONLY', // a completed lead is never re-run
+          args: [lead.id, toPhoneLookupInput(lead)],
+        })
+      )
+    )
+
+    // e.g. Temporal already holds a completed run for this lead: never leave it stuck in PENDING
+    const notStarted = leads.filter((_, i) => outcomes[i].status === 'rejected').map((lead) => lead.id)
+    if (notStarted.length > 0) {
+      await prisma.lead.updateMany({
+        where: { id: { in: notStarted }, phoneEnrichmentStatus: 'PENDING' },
+        data: { phoneEnrichmentStatus: 'FAILED' },
+      })
+    }
+
+    res.status(202).json({
+      started: leads.length - notStarted.length,
+      skipped: ids.length - leads.length,
+      failedToStart: notStarted.length,
+    })
+  } catch (error) {
+    console.error('Error enriching phones:', error)
+    res.status(500).json({ error: 'Failed to enrich phones' })
+  }
+})
+
 // Only start the server and worker when run directly (nodemon / node), not when imported by tests.
 if (require.main === module) {
   app.listen(4000, () => {
     console.log('Express server is running on port 4000')
   })
+
+  const missingKeys = ['ORION_API_KEY', 'ASTRA_API_KEY', 'NIMBUS_API_KEY'].filter((key) => !process.env[key])
+  if (missingKeys.length > 0) {
+    console.warn(`Phone enrichment: missing ${missingKeys.join(', ')}. Copy .env.sample to .env.`)
+  }
 
   runTemporalWorker().catch((err) => {
     console.error(err)

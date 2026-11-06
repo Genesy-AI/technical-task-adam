@@ -19,4 +19,6 @@ model lead {
   companyName String?
   message     String?
   emailVerified Boolean?
+  phoneNumber String?
+  phoneEnrichmentStatus String? // PENDING | FOUND | NOT_FOUND | FAILED (SQLite has no enums)
 }
